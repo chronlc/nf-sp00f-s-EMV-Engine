@@ -1,0 +1,79 @@
+# nf-sp00f EMV Engine - Git Ignore Configuration
+
+# Android/Gradle
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# Android NDK
+*.o
+*.a
+*.so
+
+# Kotlin
+*.class
+*.jar
+out/
+
+# Build outputs
+/Android EMV/build/
+/Android EMV/.gradle/
+/Android EMV/app/build/
+
+# IDE files
+.vscode/settings.json
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Security - Never commit keys or certificates
+*.keystore
+*.jks
+key.properties
+google-services.json
+/secrets/
+
+# NFC/Bluetooth test data
+/test-data/*.bin
+/captures/*.pcap
+
+# Memory files (keep structure, ignore content)
+/docs/mem/*.json
+!/docs/mem/.gitkeep
+
+# Work files (development artifacts)
+/Work/*.tmp
+/Work/test_*
+/Work/debug_*
+
+# Proxmark EMV (source reference only)
+/Proxmark EMV/build/
+/Proxmark EMV/*.o
+/Proxmark EMV/*.so
+
+# Agent scripts (never in production)
+**/agent_*.py
+**/automation_*.sh
+**/debug_*.sh

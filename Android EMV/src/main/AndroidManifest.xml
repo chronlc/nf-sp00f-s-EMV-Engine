@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- NFC permissions for EMV card processing -->
+    <uses-permission android:name="android.permission.NFC" />
+    
+    <!-- Bluetooth permissions for PN532 via HC-06 -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    
+    <!-- Declare that NFC is preferred but not required (can use PN532) -->
+    <uses-feature
+        android:name="android.hardware.nfc"
+        android:required="false" />
+    
+    <!-- Declare Bluetooth support -->
+    <uses-feature
+        android:name="android.hardware.bluetooth"
+        android:required="false" />
+    
+    <!-- HCE (Host Card Emulation) support if needed -->
+    <uses-feature
+        android:name="android.hardware.nfc.hce"
+        android:required="false" />
+
+</manifest>

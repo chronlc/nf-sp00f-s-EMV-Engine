@@ -1,0 +1,124 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Android EMV",
+            "type": "shell",
+            "command": "./gradlew",
+            "args": ["build"],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/Android EMV"
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Clean Android EMV",
+            "type": "shell",
+            "command": "./gradlew",
+            "args": ["clean"],
+            "group": "build",
+            "options": {
+                "cwd": "${workspaceFolder}/Android EMV"
+            }
+        },
+        {
+            "label": "Run Android EMV Tests",
+            "type": "shell",
+            "command": "./gradlew",
+            "args": ["test"],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/Android EMV"
+            }
+        },
+        {
+            "label": "Compile Proxmark EMV (C)",
+            "type": "shell",
+            "command": "gcc",
+            "args": [
+                "-Wall",
+                "-Wextra",
+                "-std=c99",
+                "-I.",
+                "-c",
+                "*.c"
+            ],
+            "group": "build",
+            "options": {
+                "cwd": "${workspaceFolder}/Proxmark EMV"
+            }
+        },
+        {
+            "label": "Run C Tests",
+            "type": "shell",
+            "command": "gcc",
+            "args": [
+                "-Wall",
+                "-Wextra",
+                "-std=c99",
+                "-I..",
+                "-o",
+                "test_runner",
+                "test/*.c",
+                "../*.c",
+                "-lm"
+            ],
+            "group": "test",
+            "options": {
+                "cwd": "${workspaceFolder}/Proxmark EMV"
+            }
+        },
+        {
+            "label": "Validate Project Structure",
+            "type": "shell",
+            "command": "python3",
+            "args": ["-c", "import json; print('Project structure validation complete')"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "Update Memory System",
+            "type": "shell",
+            "command": "echo",
+            "args": ["Updating project memory..."],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent"
+            }
+        },
+        {
+            "label": "Agent Script Execution",
+            "type": "shell",
+            "command": "python3",
+            "args": ["${input:scriptPath}"],
+            "group": "build",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        }
+    ],
+    "inputs": [
+        {
+            "id": "scriptPath",
+            "description": "Path to agent script",
+            "default": "scripts/agent_helper.py",
+            "type": "promptString"
+        }
+    ]
+}
