@@ -26,6 +26,8 @@ import com.nf_sp00f.app.emv.nfc.INfcProvider
 import com.nf_sp00f.app.emv.security.RocaSecurityScanner
 import com.nf_sp00f.app.emv.tlv.*
 import com.nf_sp00f.app.emv.apdu.*
+import com.nf_sp00f.app.emv.crypto.*
+import com.nf_sp00f.app.emv.auth.*
 import kotlinx.coroutines.*
 
 /**
@@ -73,6 +75,9 @@ class EmvEngine private constructor(
     private val tlvParser = TlvParser()
     private val tlvOperations = TlvDatabaseOperations()
     private val apduBuilder = EmvApduBuilder()
+    private val pkiProcessor = EmvPkiProcessor()
+    private val authEngine = EmvAuthenticationEngine(pkiProcessor, apduBuilder)
+    private val authDetector = AuthenticationMethodDetector()
     
     /**
      * Process complete EMV transaction with full authentication
@@ -321,13 +326,18 @@ class EmvEngine private constructor(
         cardData: EmvCardData,
         application: EmvApplication
     ): AuthenticationResult {
+        val tlvDatabase = cardData.tlvDatabase ?: return AuthenticationResult.Failed("No TLV data available")
+        
         // Determine authentication method from AIP
-        val authMethod = determineAuthenticationMethod(cardData)
+        val authMethod = authDetector.determineAuthenticationMethod(tlvDatabase)
         
         return when (authMethod) {
-            AuthenticationType.SDA -> performStaticDataAuthentication(cardData)
-            AuthenticationType.DDA -> performDynamicDataAuthentication(cardData)
-            AuthenticationType.CDA -> performCombinedDataAuthentication(cardData)
+            AuthenticationType.SDA -> authEngine.performStaticDataAuthentication(tlvDatabase)
+            AuthenticationType.DDA -> authEngine.performDynamicDataAuthentication(nfcProvider, tlvDatabase)
+            AuthenticationType.CDA -> {
+                // CDA requires additional transaction data - for now, fall back to DDA
+                authEngine.performDynamicDataAuthentication(nfcProvider, tlvDatabase)
+            }
             AuthenticationType.NONE -> AuthenticationResult.NotRequired
         }
     }
@@ -405,24 +415,12 @@ class EmvEngine private constructor(
         )
     }
     
-    private fun determineAuthenticationMethod(cardData: EmvCardData): AuthenticationType {
-        // TODO: Analyze AIP to determine authentication method
-        return AuthenticationType.SDA
-    }
-    
-    private suspend fun performStaticDataAuthentication(cardData: EmvCardData): AuthenticationResult {
-        // TODO: Implement SDA
-        return AuthenticationResult.Success(AuthenticationType.SDA)
-    }
-    
-    private suspend fun performDynamicDataAuthentication(cardData: EmvCardData): AuthenticationResult {
-        // TODO: Implement DDA
-        return AuthenticationResult.Success(AuthenticationType.DDA)
-    }
-    
-    private suspend fun performCombinedDataAuthentication(cardData: EmvCardData): AuthenticationResult {
-        // TODO: Implement CDA
-        return AuthenticationResult.Success(AuthenticationType.CDA)
+    /**
+     * Initialize PKI processor with default CA keys
+     */
+    private fun initializePkiProcessor() {
+        pkiProcessor.loadDefaultCaKeys()
+        pkiProcessor.setStrictValidation(configuration.strictValidation)
     }
     
     /**
@@ -453,7 +451,9 @@ class EmvEngine private constructor(
             val provider = nfcProvider ?: throw IllegalStateException("NFC provider is required")
             val scanner = rocaScanner ?: RocaSecurityScanner()
             
-            return EmvEngine(provider, scanner, configuration)
+            val engine = EmvEngine(provider, scanner, configuration)
+            engine.initializePkiProcessor()
+            return engine
         }
     }
 }

@@ -62,11 +62,7 @@ value class TlvTag(val value: UInt) {
         const val TERMINAL_VERIFICATION_RESULTS = 0x95_u
         const val TRANSACTION_CERTIFICATE_DATA_OBJECT_LIST = 0x97_u
         const val TRANSACTION_CERTIFICATE_HASH_VALUE = 0x98_u
-        const val TRANSACTION_PERSONAL_IDENTIFICATION_NUMBER_DATA = 0x99_u
-        const val TRANSACTION_DATE = 0x9A_u
-        const val TRANSACTION_STATUS_INFORMATION = 0x9B_u
-        const val TRANSACTION_TYPE = 0x9C_u
-        const val DIRECTORY_DEFINITION_FILE_NAME = 0x9D_u
+                const val TRANSACTION_PERSONAL_IDENTIFICATION_NUMBER_DATA = 0x99_u\n        const val TRANSACTION_DATE = 0x9A_u\n        const val TRANSACTION_STATUS_INFORMATION = 0x9B_u\n        const val TRANSACTION_TYPE = 0x9C_u\n        const val DIRECTORY_DEFINITION_FILE_NAME = 0x9D_u\n        \n        // Additional EMV tags for authentication\n        const val APPLICATION_USAGE_CONTROL = 0x9F07_u\n        const val APPLICATION_VERSION_NUMBER = 0x9F08_u\n        const val ISSUER_ACTION_CODE_DEFAULT = 0x9F0D_u\n        const val ISSUER_ACTION_CODE_DENIAL = 0x9F0E_u\n        const val ISSUER_ACTION_CODE_ONLINE = 0x9F0F_u\n        const val ICC_PUBLIC_KEY_CERTIFICATE = 0x9F46_u\n        const val ICC_PUBLIC_KEY_EXPONENT = 0x9F47_u\n        const val ICC_PUBLIC_KEY_REMAINDER = 0x9F48_u\n        const val DYNAMIC_DATA_AUTHENTICATION_DATA_OBJECT_LIST = 0x9F49_u\n        const val STATIC_DATA_AUTHENTICATION_TAG_LIST = 0x9F4A_u"
         
         fun fromBytes(data: ByteArray, offset: Int = 0): Pair<TlvTag, Int> {
             if (offset >= data.size) return TlvTag(INVALID_TAG) to 0
