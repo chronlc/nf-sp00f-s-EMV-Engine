@@ -195,6 +195,94 @@ The **nf-sp00f EMV Engine** is a comprehensive pure Kotlin implementation of EMV
 - Android platform integration utilities
 - Development and testing support tools
 
+## Integration Guide
+
+### Quick Start - Add to Your Android Project
+
+#### Method 1: Direct Module Integration
+```bash
+# Clone and copy library module
+git clone https://github.com/chronlc/nf-sp00f-s-EMV-Engine.git
+cp -r nf-sp00f-s-EMV-Engine/"Android EMV" your-project/emv-library
+```
+
+**Add to `settings.gradle.kts`:**
+```kotlin
+include(":emv-library")
+```
+
+**Add to app's `build.gradle.kts`:**
+```kotlin
+dependencies {
+    implementation(project(":emv-library"))
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+    implementation("com.jakewharton.timber:timber:5.0.1")
+}
+```
+
+#### Method 2: AAR Library
+```bash
+# Build AAR from source
+./gradlew assembleRelease
+# Copy AAR to your project's app/libs/ directory
+```
+
+### Basic Usage Example
+
+```kotlin
+import com.nf_sp00f.app.emv.*
+import com.nf_sp00f.app.emv.nfc.*
+
+class PaymentActivity : AppCompatActivity() {
+    
+    private val emvEngine = EmvEngine.builder()
+        .nfcProvider(AndroidInternalNfcProvider(this))
+        .enableRocaDetection(true)
+        .build()
+    
+    suspend fun processPayment(amount: Long, currency: String): TransactionResult {
+        val transactionData = TransactionData(
+            amount = amount,
+            currency = currency,
+            transactionType = TransactionType.PURCHASE
+        )
+        
+        return emvEngine.processTransaction(transactionData)
+    }
+}
+```
+
+### Advanced Features
+
+```kotlin
+// Dual NFC Provider Support
+val pn532Provider = Pn532BluetoothNfcProvider().apply {
+    setBluetoothDevice("98:D3:31:F5:69:42", "PN532-HC06")
+}
+
+// Security Analysis
+val commandInterface = EmvCommandInterface()
+val securityResult = commandInterface.executeSecurityAnalysis(context)
+
+// JSON Export
+val jsonProcessor = EmvJsonProcessor()
+val exportData = jsonProcessor.exportSessionToJson(sessionData)
+```
+
+### Required Permissions
+
+**Add to `AndroidManifest.xml`:**
+```xml
+<uses-permission android:name="android.permission.NFC" />
+<uses-permission android:name="android.permission.BLUETOOTH" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+```
+
+**Complete integration guide:** See [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md)  
+**Working example:** See [examples/QuickStartExample.kt](examples/QuickStartExample.kt)
+
 ## License
 
 MIT License - See LICENSE file for complete terms and conditions.
