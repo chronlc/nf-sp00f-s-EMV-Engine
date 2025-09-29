@@ -1,6 +1,7 @@
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
+    id("kotlinx-serialization")
     kotlin("kapt")
 }
 
@@ -80,9 +81,6 @@ dependencies {
     
     // NFC Support
     implementation("androidx.activity:activity-ktx:1.8.2")
-    
-    // Bluetooth Support for PN532
-    implementation("androidx.bluetooth:bluetooth:1.0.0-alpha02")
     
     // Coroutines for async operations
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
