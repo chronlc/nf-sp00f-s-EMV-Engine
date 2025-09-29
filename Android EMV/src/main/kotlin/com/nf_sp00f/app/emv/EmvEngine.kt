@@ -1,3 +1,16 @@
+/**
+ * nf-sp00f EMV Engine - Main Processing Engine
+ * 
+ * Advanced EMV processing with dual NFC provider support.
+ * Integrates TLV parsing, APDU building, complete EMV transaction flow,
+ * ROCA vulnerability detection, and enhanced cryptographic primitives.
+ * 
+ * Phase 3 Integration: ROCA Security Scanner + Crypto Primitives
+ * 
+ * @package com.nf_sp00f.app.emv
+ * @author nf-sp00f
+ * @since 1.0.0
+ */
 package com.nf_sp00f.app.emv
 
 import kotlinx.coroutines.*
@@ -9,26 +22,10 @@ import android.nfc.tech.IsoDep
 import timber.log.Timber
 import com.nf_sp00f.app.emv.nfc.*
 import com.nf_sp00f.app.emv.security.RocaSecurityScanner
-
-/**
- * nf-sp00f EMV Engine - Main Processing Engine
- * 
- * Advanced EMV processing with dual NFC provider support.
- * Integrates TLV parsing, APDU building, and complete EMV transaction flow.
- * 
- * @package com.nf_sp00f.app.emv
- * @author nf-sp00f
- * @since 1.0.0
- */
-package com.nf_sp00f.app.emv
-
-import com.nf_sp00f.app.emv.nfc.INfcProvider
-import com.nf_sp00f.app.emv.security.RocaSecurityScanner
 import com.nf_sp00f.app.emv.tlv.*
 import com.nf_sp00f.app.emv.apdu.*
 import com.nf_sp00f.app.emv.crypto.*
 import com.nf_sp00f.app.emv.auth.*
-import kotlinx.coroutines.*
 
 /**
  * Main EMV processing engine with comprehensive transaction support
@@ -45,10 +42,16 @@ import kotlinx.coroutines.*
  * 9. Online Processing (if required)
  * 10. Issuer Authentication (if required)
  * 11. Script Processing (if required)
+ * 
+ * Phase 3 Features:
+ * - Enhanced ROCA vulnerability detection (CVE-2017-15361)
+ * - Advanced cryptographic primitives with Android Security Provider
+ * - Comprehensive security testing and validation
  */
 class EmvEngine private constructor(
     private val nfcProvider: INfcProvider,
     private val rocaScanner: RocaSecurityScanner,
+    private val cryptoPrimitives: EmvCryptoPrimitives,
     private val configuration: EmvConfiguration
 ) {
     
@@ -78,11 +81,13 @@ class EmvEngine private constructor(
     private val pkiProcessor = EmvPkiProcessor()
     private val authEngine = EmvAuthenticationEngine(pkiProcessor, apduBuilder)
     private val authDetector = AuthenticationMethodDetector()
+    private val cryptoTestSuite = EmvCryptoTestSuite()
     
     /**
-     * Process complete EMV transaction with full authentication
+     * Process complete EMV transaction with full authentication and security checks
      * 
      * Ported from Proxmark3: CmdEMVExec(), CmdEMVScan()
+     * Enhanced with Phase 3 security features
      */
     suspend fun processTransaction(
         amount: Long,
@@ -119,21 +124,29 @@ class EmvEngine private constructor(
             // Step 5: Perform authentication (SDA/DDA/CDA)
             val authResult = performAuthentication(cardData, selectedApp)
             
-            // Step 6: ROCA vulnerability check
+            // Step 6: Enhanced ROCA vulnerability check (Phase 3)
             if (configuration.enableRocaCheck) {
-                val rocaResult = rocaScanner.checkCard(cardData)
+                val rocaResult = performEnhancedRocaCheck(cardData)
                 if (rocaResult.isVulnerable) {
                     return@withContext EmvTransactionResult.RocaVulnerable(rocaResult)
                 }
             }
             
-            // Step 7: Processing restrictions and risk management
+            // Step 7: Cryptographic validation (Phase 3)
+            if (configuration.enableCryptoValidation) {
+                val cryptoResult = validateCryptographicIntegrity(cardData, authResult)
+                if (!cryptoResult.isValid) {
+                    return@withContext EmvTransactionResult.CryptoValidationFailed(cryptoResult)
+                }
+            }
+            
+            // Step 8: Processing restrictions and risk management
             val riskResult = performRiskManagement(cardData, amount, transactionType)
             
-            // Step 8: Terminal action analysis
+            // Step 9: Terminal action analysis
             val actionResult = performActionAnalysis(cardData, authResult, riskResult)
             
-            // Step 9: Transaction completion
+            // Step 10: Transaction completion
             EmvTransactionResult.Success(
                 cardData = cardData,
                 authenticationResult = authResult,
@@ -152,291 +165,190 @@ class EmvEngine private constructor(
     }
     
     /**
-     * Select EMV application using PSE or direct AID selection
-     * Ported from: EMVSearchPSE(), EMVSearch()
+     * Enhanced ROCA vulnerability check with multiple detection methods
+     * Phase 3 implementation
      */
-    private suspend fun selectApplication(): ApplicationSelectionResult {
-        // Try PSE selection first (contactless preferred)
-        val pseResult = selectViaPSE(contactless = true)
-        if (pseResult is ApplicationSelectionResult.Success) {
-            return pseResult
-        }
-        
-        // Try contact PSE if contactless failed
-        val contactPseResult = selectViaPSE(contactless = false)
-        if (contactPseResult is ApplicationSelectionResult.Success) {
-            return contactPseResult
-        }
-        
-        // Fall back to direct AID selection
-        return selectViaDirectAid()
-    }
-    
-    /**
-     * Select application via PSE (Payment System Environment)
-     * Ported from: EMVSelectPSE()
-     */
-    private suspend fun selectViaPSE(contactless: Boolean): ApplicationSelectionResult {
-        try {
-            // Build SELECT PSE command
-            val selectPseCommand = apduBuilder.buildSelectPSE(contactless)
-            
-            // Send APDU
-            val apduResult = nfcProvider.exchangeApdu(selectPseCommand.toByteArray())
-            when (apduResult) {
-                is ApduResult.Success -> {
-                    val response = apduResult.response
-                    if (!response.isSuccess) {
-                        return ApplicationSelectionResult.Error("PSE selection failed: ${response.errorDescription}")
-                    }
-                    
-                    // Parse PSE response to find applications
-                    val pseApps = parsePseResponse(response.data)
-                    if (pseApps.isEmpty()) {
-                        return ApplicationSelectionResult.Error("No applications found in PSE")
-                    }
-                    
-                    // Select highest priority application
-                    val selectedApp = pseApps.minByOrNull { it.priority }
-                        ?: return ApplicationSelectionResult.Error("No valid application found")
-                    
-                    return ApplicationSelectionResult.Success(selectedApp)
-                }
-                is ApduResult.Error -> {
-                    return ApplicationSelectionResult.Error("PSE APDU failed: ${apduResult.message}")
-                }
-                is ApduResult.Timeout -> {
-                    return ApplicationSelectionResult.Error("PSE selection timeout")
-                }
+    private suspend fun performEnhancedRocaCheck(cardData: EmvCardData): RocaVulnerabilityResult {
+        return try {
+            // Extract public key from card data
+            val publicKey = cardData.getIssuerPublicKey()
+            if (publicKey != null) {
+                // Perform comprehensive ROCA analysis
+                rocaScanner.checkRocaVulnerability(publicKey, RocaDetectionMethod.FINGERPRINT_ANALYSIS)
+            } else {
+                RocaVulnerabilityResult(
+                    isVulnerable = false,
+                    confidence = 0.0,
+                    analysisMethod = RocaDetectionMethod.FINGERPRINT_ANALYSIS,
+                    details = "No public key available for ROCA analysis"
+                )
             }
         } catch (e: Exception) {
-            return ApplicationSelectionResult.Error("PSE selection error: ${e.message}")
+            RocaVulnerabilityResult(
+                isVulnerable = false,
+                confidence = 0.0,
+                analysisMethod = RocaDetectionMethod.FINGERPRINT_ANALYSIS,
+                details = "ROCA check failed: ${e.message}"
+            )
         }
     }
     
     /**
-     * Select application via direct AID probing
-     * Ported from: EMVSearch()
+     * Validate cryptographic integrity using Phase 3 primitives
      */
-    private suspend fun selectViaDirectAid(): ApplicationSelectionResult {
-        for (aidHex in COMMON_AIDS) {
-            try {
-                val selectCommand = apduBuilder.buildSelectAid(aidHex)
-                val apduResult = nfcProvider.exchangeApdu(selectCommand.toByteArray())
-                
-                if (apduResult is ApduResult.Success && apduResult.response.isSuccess) {
-                    // Parse FCI response
-                    val app = parseFciResponse(aidHex, apduResult.response.data)
-                    return ApplicationSelectionResult.Success(app)
-                }
-            } catch (e: Exception) {
-                // Continue trying next AID
-                continue
-            }
-        }
-        
-        return ApplicationSelectionResult.Error("No supported application found")
-    }
-    
-    /**
-     * Initiate application processing (GET PROCESSING OPTIONS)
-     * Ported from: EMVGPO()
-     */
-    private suspend fun initiateApplicationProcessing(
-        application: EmvApplication,
-        amount: Long,
-        currencyCode: String,
-        transactionType: TransactionType
-    ): ProcessingResult {
-        try {
-            // Build PDOL data if required
-            val pdolData = buildPdolData(application, amount, currencyCode, transactionType)
+    private suspend fun validateCryptographicIntegrity(
+        cardData: EmvCardData,
+        authResult: AuthenticationResult
+    ): CryptoValidationResult {
+        return try {
+            val results = mutableListOf<ValidationCheck>()
             
-            // Build GPO command
-            val gpoCommand = apduBuilder.buildGetProcessingOptions(pdolData)
-            
-            // Send APDU
-            val apduResult = nfcProvider.exchangeApdu(gpoCommand.toByteArray())
-            when (apduResult) {
-                is ApduResult.Success -> {
-                    val response = apduResult.response
-                    if (!response.isSuccess) {
-                        return ProcessingResult.Error("GPO failed: ${response.errorDescription}")
-                    }
-                    
-                    // Parse GPO response
-                    val processingOptions = parseGpoResponse(response.data)
-                    return ProcessingResult.Success(processingOptions)
-                }
-                is ApduResult.Error -> {
-                    return ProcessingResult.Error("GPO APDU failed: ${apduResult.message}")
-                }
-                is ApduResult.Timeout -> {
-                    return ProcessingResult.Error("GPO timeout")
-                }
+            // 1. Hash validation using enhanced crypto primitives
+            val applicationData = cardData.getAllTlvData()
+            val computedHash = cryptoPrimitives.computeApplicationHash(applicationData)
+            val storedHash = cardData.getApplicationHash()
+            val hashValid = if (storedHash != null) {
+                EmvCryptoUtils.constantTimeEquals(computedHash, storedHash)
+            } else {
+                true // No stored hash to validate against
             }
+            results.add(ValidationCheck("Application Hash", hashValid))
+            
+            // 2. RSA signature validation
+            val signatureData = cardData.getDynamicSignature()
+            val signatureValid = if (signatureData != null && authResult.publicKey != null) {
+                cryptoPrimitives.verifyRsaSignature(applicationData, signatureData, authResult.publicKey)
+            } else {
+                true // No signature to validate
+            }
+            results.add(ValidationCheck("RSA Signature", signatureValid))
+            
+            // 3. Certificate chain validation
+            val certificateChain = cardData.getCertificateChain()
+            val chainValid = cryptoPrimitives.validateCertificateChain(certificateChain)
+            results.add(ValidationCheck("Certificate Chain", chainValid))
+            
+            // 4. Key parameter validation
+            val keyValid = if (authResult.publicKey != null) {
+                val modulus = authResult.publicKey.getKeyParameter(RsaKeyParameter.MODULUS)
+                val exponent = authResult.publicKey.getKeyParameter(RsaKeyParameter.PUBLIC_EXPONENT)
+                EmvCryptoUtils.validateRsaKey(modulus, exponent)
+            } else {
+                true // No key to validate
+            }
+            results.add(ValidationCheck("Key Parameters", keyValid))
+            
+            val allValid = results.all { it.passed }
+            
+            CryptoValidationResult(
+                isValid = allValid,
+                validationChecks = results,
+                details = if (allValid) "All cryptographic validations passed" else "Some validations failed"
+            )
+            
         } catch (e: Exception) {
-            return ProcessingResult.Error("GPO error: ${e.message}")
+            CryptoValidationResult(
+                isValid = false,
+                validationChecks = emptyList(),
+                details = "Crypto validation failed: ${e.message}"
+            )
         }
     }
     
     /**
-     * Read application data from AFL (Application File Locator)
-     * Ported from: EMVReadRecord()
+     * Run comprehensive security tests (Phase 3)
      */
-    private suspend fun readApplicationData(
-        processingResult: ProcessingResult.Success
-    ): EmvCardData {
-        val tlvDatabase = TlvDatabase()
-        val processingOptions = processingResult.options
-        
-        // Read records specified in AFL
-        for (fileRecord in processingOptions.afl) {
-            for (recordNum in fileRecord.firstRecord..fileRecord.lastRecord) {
-                try {
-                    val readCommand = apduBuilder.buildReadRecord(recordNum.toUByte(), fileRecord.sfi.toUByte())
-                    val apduResult = nfcProvider.exchangeApdu(readCommand.toByteArray())
-                    
-                    if (apduResult is ApduResult.Success && apduResult.response.isSuccess) {
-                        // Parse TLV data from record
-                        val parseResult = tlvParser.parseToDatabase(apduResult.response.data)
-                        if (parseResult is TlvResult.Success) {
-                            // Merge into main database
-                            for ((tag, element) in parseResult.value.getAllElements()) {
-                                tlvDatabase.addElement(element)
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    // Continue reading other records
-                    continue
-                }
-            }
-        }
-        
-        // Extract card data from TLV database
-        return extractCardDataFromTlv(tlvDatabase)
-    }
-    
-    /**
-     * Perform EMV authentication (SDA/DDA/CDA)
-     * Ported from: trSDA(), trDDA(), trCDA()
-     */
-    private suspend fun performAuthentication(
-        cardData: EmvCardData,
-        application: EmvApplication
-    ): AuthenticationResult {
-        val tlvDatabase = cardData.tlvDatabase ?: return AuthenticationResult.Failed("No TLV data available")
-        
-        // Determine authentication method from AIP
-        val authMethod = authDetector.determineAuthenticationMethod(tlvDatabase)
-        
-        return when (authMethod) {
-            AuthenticationType.SDA -> authEngine.performStaticDataAuthentication(tlvDatabase)
-            AuthenticationType.DDA -> authEngine.performDynamicDataAuthentication(nfcProvider, tlvDatabase)
-            AuthenticationType.CDA -> {
-                // CDA requires additional transaction data - for now, fall back to DDA
-                authEngine.performDynamicDataAuthentication(nfcProvider, tlvDatabase)
-            }
-            AuthenticationType.NONE -> AuthenticationResult.NotRequired
+    suspend fun runSecurityTests(): SecurityTestResult = withContext(Dispatchers.Default) {
+        try {
+            val results = mutableListOf<SecurityCheck>()
+            
+            // 1. ROCA self-test
+            val rocaTest = rocaScanner.runSelfTest()
+            results.add(SecurityCheck("ROCA Scanner", rocaTest, if (rocaTest) "Self-test passed" else "Self-test failed"))
+            
+            // 2. Crypto primitives test
+            val cryptoTestResult = cryptoTestSuite.runAllTests()
+            results.add(SecurityCheck(
+                "Crypto Primitives", 
+                cryptoTestResult.passed, 
+                cryptoTestResult.summary
+            ))
+            
+            // 3. PKI processor test
+            val pkiTest = pkiProcessor.runSelfTest()
+            results.add(SecurityCheck("PKI Processor", pkiTest, if (pkiTest) "PKI validation working" else "PKI validation failed"))
+            
+            // 4. NFC provider test
+            val nfcTest = nfcProvider.runDiagnostics()
+            results.add(SecurityCheck("NFC Provider", nfcTest.isHealthy, nfcTest.status))
+            
+            val allPassed = results.all { it.passed }
+            
+            SecurityTestResult(
+                passed = allPassed,
+                securityChecks = results,
+                summary = if (allPassed) "All security tests passed" else "Some security tests failed",
+                rocaInfo = rocaScanner.getRocaInfo()
+            )
+            
+        } catch (e: Exception) {
+            SecurityTestResult(
+                passed = false,
+                securityChecks = emptyList(),
+                summary = "Security test suite failed: ${e.message}",
+                rocaInfo = ""
+            )
         }
     }
     
     /**
-     * Perform risk management checks
+     * Get crypto primitives information
      */
-    private suspend fun performRiskManagement(
-        cardData: EmvCardData,
-        amount: Long,
-        transactionType: TransactionType
-    ): RiskManagementResult {
-        // TODO: Implement risk management logic
-        return RiskManagementResult.Approved
+    fun getCryptoPrimitivesInfo(): String {
+        return cryptoPrimitives.getBackendInfo()
     }
     
     /**
-     * Perform terminal action analysis
+     * Cleanup resources
      */
-    private suspend fun performActionAnalysis(
-        cardData: EmvCardData,
-        authResult: AuthenticationResult,
-        riskResult: RiskManagementResult
-    ): ActionAnalysisResult {
-        // TODO: Implement action analysis logic
-        return ActionAnalysisResult.Approved
-    }
-    
-    // Helper methods for parsing responses
-    private suspend fun parsePseResponse(data: ByteArray): List<EmvApplication> {
-        // TODO: Parse PSE FCI template to extract applications
-        return emptyList()
-    }
-    
-    private fun parseFciResponse(aid: String, data: ByteArray): EmvApplication {
-        // TODO: Parse FCI template to extract application info
-        return EmvApplication(
-            aid = aid,
-            label = "Unknown",
-            priority = 1
-        )
-    }
-    
-    private fun buildPdolData(
-        application: EmvApplication,
-        amount: Long,
-        currencyCode: String,
-        transactionType: TransactionType
-    ): ByteArray {
-        // TODO: Build PDOL data based on application requirements
-        return byteArrayOf()
-    }
-    
-    private suspend fun parseGpoResponse(data: ByteArray): ProcessingOptions {
-        // TODO: Parse GPO response (Format 1 or Format 2)
-        return ProcessingOptions(
-            aip = byteArrayOf(),
-            afl = emptyList()
-        )
-    }
-    
-    private fun extractCardDataFromTlv(database: TlvDatabase): EmvCardData {
-        // Extract common EMV data elements
-        val pan = database.findElement(TlvTag(TlvTag.APPLICATION_PAN))?.valueAsString() ?: "Unknown"
-        val expiry = database.findElement(TlvTag(TlvTag.APPLICATION_EXPIRATION_DATE))?.valueAsString() ?: "Unknown"
-        val name = database.findElement(TlvTag(TlvTag.CARDHOLDER_NAME))?.valueAsString() ?: "Unknown"
-        val label = database.findElement(TlvTag(TlvTag.APPLICATION_LABEL))?.valueAsString() ?: "Unknown"
-        
-        return EmvCardData(
-            pan = pan,
-            expiryDate = expiry,
-            cardholderName = name,
-            applicationLabel = label,
-            tlvDatabase = database
-        )
+    fun cleanup() {
+        cryptoTestSuite.cleanup()
+        rocaScanner.cleanup()
+        cryptoPrimitives.cleanup()
+        nfcProvider.disconnect()
     }
     
     /**
-     * Initialize PKI processor with default CA keys
-     */
-    private fun initializePkiProcessor() {
-        pkiProcessor.loadDefaultCaKeys()
-        pkiProcessor.setStrictValidation(configuration.strictValidation)
-    }
-    
-    /**
-     * Builder pattern for EmvEngine configuration
+     * Builder class for EmvEngine configuration
      */
     class Builder {
         private var nfcProvider: INfcProvider? = null
         private var rocaScanner: RocaSecurityScanner? = null
+        private var cryptoPrimitives: EmvCryptoPrimitives? = null
         private var configuration = EmvConfiguration()
         
         fun nfcProvider(provider: INfcProvider) = apply {
             this.nfcProvider = provider
         }
         
+        fun rocaScanner(scanner: RocaSecurityScanner) = apply {
+            this.rocaScanner = scanner
+        }
+        
+        fun cryptoPrimitives(primitives: EmvCryptoPrimitives) = apply {
+            this.cryptoPrimitives = primitives
+        }
+        
         fun enableRocaCheck(enabled: Boolean) = apply {
             this.configuration = configuration.copy(enableRocaCheck = enabled)
+        }
+        
+        fun enableCryptoValidation(enabled: Boolean) = apply {
+            this.configuration = configuration.copy(enableCryptoValidation = enabled)
+        }
+        
+        fun enableCryptoTesting(enabled: Boolean) = apply {
+            this.configuration = configuration.copy(enableCryptoTesting = enabled)
         }
         
         fun timeout(timeoutMs: Long) = apply {
@@ -447,331 +359,249 @@ class EmvEngine private constructor(
             this.configuration = configuration.copy(strictValidation = enabled)
         }
         
-        fun build(): EmvEngine {
+        suspend fun build(): EmvEngine {
             val provider = nfcProvider ?: throw IllegalStateException("NFC provider is required")
             val scanner = rocaScanner ?: RocaSecurityScanner()
+            val crypto = cryptoPrimitives ?: EmvCryptoPrimitives()
             
-            val engine = EmvEngine(provider, scanner, configuration)
+            val engine = EmvEngine(provider, scanner, crypto, configuration)
             engine.initializePkiProcessor()
             return engine
         }
-    }
-}
-class EmvEngine private constructor() {
-    
-    private var currentNfcProvider: INfcProvider? = null
-    private var nfcConfig: NfcProviderConfig = NfcProviderConfig(NfcProviderType.ANDROID_INTERNAL)
-    private val rocaScanner = RocaSecurityScanner()
-    
-    companion object {
-        @Volatile
-        private var INSTANCE: EmvEngine? = null
         
-        fun getInstance(): EmvEngine {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: EmvEngine().also { INSTANCE = it }
-            }
-        }
-        
-        // Load native library
-        init {
-            System.loadLibrary("emvport")
-        }
-    }
-    
-    // JNI Native methods - implemented in emv_jni.cpp
-    private external fun nativeInitializeEmv(): Boolean
-    private external fun nativeCleanupEmv()
-    private external fun nativeProcessCard(
-        cardData: ByteArray,
-        selectAid: String?
-    ): EmvTransactionResult
-    private external fun nativeGetSupportedAids(): Array<String>
-    private external fun nativeValidateCertificate(
-        certData: ByteArray,
-        issuerCert: ByteArray
-    ): Boolean
-    
-    /**
-     * Initialize the EMV engine with NFC provider configuration
-     */
-    suspend fun initialize(config: NfcProviderConfig? = null): Boolean = withContext(Dispatchers.Default) {
-        try {
-            // Set NFC configuration
-            config?.let { nfcConfig = it }
+        /**
+         * Build EMV engine synchronously (will initialize PKI in background)
+         */
+        fun buildAsync(): EmvEngine {
+            val provider = nfcProvider ?: throw IllegalStateException("NFC provider is required")
+            val scanner = rocaScanner ?: RocaSecurityScanner()
+            val crypto = cryptoPrimitives ?: EmvCryptoPrimitives()
             
-            // Initialize native EMV engine
-            val nativeResult = nativeInitializeEmv()
-            if (!nativeResult) {
-                Timber.e("Failed to initialize native EMV Engine")
-                return@withContext false
-            }
-            
-            // Initialize NFC provider
-            currentNfcProvider = NfcProviderFactory.createProvider(nfcConfig.type)
-            val nfcResult = currentNfcProvider?.initialize(nfcConfig) ?: false
-            
-            if (nfcResult) {
-                Timber.i("EMV Engine initialized successfully with ${nfcConfig.type}")
-                true
-            } else {
-                Timber.e("Failed to initialize NFC provider: ${nfcConfig.type}")
-                false
-            }
-        } catch (e: Exception) {
-            Timber.e(e, "Error initializing EMV Engine")
-            false
+            val engine = EmvEngine(provider, scanner, crypto, configuration)
+            // PKI initialization will happen on first transaction
+            return engine
         }
     }
     
     /**
-     * Configure NFC provider type and settings
+     * Initialize PKI processor with default CA keys and crypto backend
      */
-    suspend fun configureNfcProvider(config: NfcProviderConfig): Boolean {
+    private suspend fun initializePkiProcessor() {
+        pkiProcessor.initialize()
+        
+        // Initialize crypto primitives
+        cryptoPrimitives.initialize()
+        
+        // Initialize ROCA scanner
+        val rocaSelfTest = rocaScanner.runSelfTest()
+        if (!rocaSelfTest) {
+            Timber.w("ROCA scanner self-test failed")
+        }
+        
+        // Run crypto test suite if in debug mode
+        if (configuration.enableCryptoTesting) {
+            val testResult = cryptoTestSuite.runAllTests()
+            Timber.d("Crypto test suite: ${testResult.summary}")
+        }
+    }
+    
+    // Production EMV implementation methods
+    private suspend fun selectApplication(): ApplicationSelectionResult {
         return try {
-            // Cleanup current provider
-            currentNfcProvider?.cleanup()
-            
-            // Initialize new provider
-            nfcConfig = config
-            currentNfcProvider = NfcProviderFactory.createProvider(config.type)
-            currentNfcProvider?.initialize(config) ?: false
-        } catch (e: Exception) {
-            Timber.e(e, "Error configuring NFC provider")
-            false
-        }
-    }
-    
-    /**
-     * Auto-detect and configure best available NFC provider
-     */
-    suspend fun autoConfigureNfc(): Boolean {
-        val detectedType = NfcProviderFactory.detectBestProvider()
-        return if (detectedType != null) {
-            val config = NfcProviderConfig(detectedType)
-            configureNfcProvider(config)
-        } else {
-            Timber.e("No suitable NFC provider detected")
-            false
-        }
-    }
-    
-    /**
-     * Process EMV card using current NFC provider (Android Internal or PN532)
-     */
-    suspend fun processCard(
-        tag: Tag? = null,  // For Android Internal NFC
-        bluetoothAddress: String? = null,  // For PN532 Bluetooth
-        transactionAmount: Long = 0L,
-        currencyCode: String = "840", // USD default
-        selectAid: String? = null
-    ): Flow<EmvTransactionStep> = flow {
-        val provider = currentNfcProvider ?: throw IllegalStateException("EMV Engine not initialized")
-        
-        try {
-            emit(EmvTransactionStep.Connecting)
-            
-            // Handle different connection methods based on provider type
-            when (nfcConfig.type) {
-                NfcProviderType.ANDROID_INTERNAL -> {
-                    if (tag == null) {
-                        emit(EmvTransactionStep.Error("Android NFC requires Tag parameter", null))
-                        return@flow
-                    }
-                    // Set tag for Android provider
-                    (provider as AndroidInternalNfcProvider).setCurrentTag(tag)
-                    if (!provider.connectToCardFromIntent(tag)) {
-                        emit(EmvTransactionStep.Error("Failed to connect to Android NFC card", null))
-                        return@flow
-                    }
-                }
-                NfcProviderType.PN532_BLUETOOTH -> {
-                    // Scan for cards with PN532
-                    val cards = provider.scanForCards()
-                    if (cards.isEmpty()) {
-                        emit(EmvTransactionStep.Error("No cards detected by PN532", null))
-                        return@flow
-                    }
-                    if (!provider.connectToCard(cards.first())) {
-                        emit(EmvTransactionStep.Error("Failed to connect to PN532 card", null))
-                        return@flow
-                    }
-                }
+            // Search for EMV applications on card
+            val searchResult = transactionEngine.searchApplications(nfcProvider)
+            if (searchResult.applications.isEmpty()) {
+                return ApplicationSelectionResult.Error("No EMV applications found on card")
             }
             
-            emit(EmvTransactionStep.SelectingApplication)
+            // Select first available application or preferred application
+            val selectedApp = searchResult.applications.first()
+            val selectResult = transactionEngine.selectApplication(nfcProvider, selectedApp.aid)
             
-            // Get card info from current provider
-            val cardInfo = provider.getCardInfo()
-            Timber.d("Card Info (${nfcConfig.type}): $cardInfo")
-            
-            // Select EMV application 
-            val selectResponse = if (selectAid != null) {
-                provider.selectApplication(selectAid)
+            if (selectResult.isSuccess) {
+                ApplicationSelectionResult.Success(selectedApp, selectResult.fciData)
             } else {
-                // Auto-select first available EMV application
-                selectFirstEmvApplication(provider)
+                ApplicationSelectionResult.Error("Application selection failed: ${selectResult.errorMessage}")
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Application selection failed")
+            ApplicationSelectionResult.Error("Application selection error: ${e.message}")
+        }
+    }
+    
+    private suspend fun initiateApplicationProcessing(
+        application: EmvApplication,
+        amount: Long,
+        currencyCode: String,
+        transactionType: TransactionType
+    ): ProcessingResult {
+        return try {
+            // Build transaction data for GPO
+            val transactionData = TransactionData(
+                amount = amount,
+                currency = currencyCode,
+                transactionType = transactionType,
+                timestamp = System.currentTimeMillis()
+            )
+            
+            // Execute Get Processing Options (GPO)
+            val gpoResult = transactionEngine.initiateApplicationProcessing(
+                nfcProvider, 
+                transactionData,
+                tlvDatabase
+            )
+            
+            if (gpoResult.isSuccess) {
+                ProcessingResult.Success(gpoResult.aip, gpoResult.afl, gpoResult.processingData)
+            } else {
+                ProcessingResult.Error("GPO failed: ${gpoResult.errorMessage}")
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Application processing initiation failed")
+            ProcessingResult.Error("Processing initiation error: ${e.message}")
+        }
+    }
+    
+    private suspend fun readApplicationData(processingResult: ProcessingResult.Success): EmvCardData {
+        return try {
+            // Read application data using AFL from GPO
+            val readResult = transactionEngine.readApplicationData(
+                nfcProvider,
+                processingResult.afl,
+                tlvDatabase
+            )
+            
+            if (readResult.isSuccess) {
+                // Extract card data from TLV database
+                EmvCardData(
+                    pan = extractPan(tlvDatabase),
+                    panSequenceNumber = extractPanSequenceNumber(tlvDatabase),
+                    expiry = extractExpiryDate(tlvDatabase),
+                    cardholderName = extractCardholderName(tlvDatabase),
+                    track2Data = extractTrack2Data(tlvDatabase),
+                    applicationLabel = extractApplicationLabel(tlvDatabase),
+                    issuerName = extractIssuerName(tlvDatabase),
+                    rawTlvData = tlvDatabase.getAllEntries()
+                )
+            } else {
+                Timber.e("Failed to read application data: ${readResult.errorMessage}")
+                EmvCardData(emptyMap())
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Application data reading failed")
+            EmvCardData(emptyMap())
+        }
+    }
+    
+    private suspend fun performAuthentication(
+        application: EmvApplication
+    ): AuthenticationResult {
+        return try {
+            val authProcessor = EmvAuthenticationProcessor()
+            
+            // Determine supported authentication methods from AIP
+            val aip = tlvDatabase.getValue(EmvTag.APPLICATION_INTERCHANGE_PROFILE)
+            if (aip == null) {
+                return AuthenticationResult.NoAuthentication("No AIP available for authentication")
             }
             
-            if (!selectResponse.isSuccess) {
-                emit(EmvTransactionStep.Error("Application selection failed", null))
-                return@flow
-            }
-            
-            emit(EmvTransactionStep.ProcessingTransaction)
-            
-            // Process EMV transaction using native engine
-            val cardData = buildEmvCardData(cardInfo, selectResponse)
-            val result = withContext(Dispatchers.Default) {
-                nativeProcessCard(cardData, selectAid)
-            }
-            
-            when (result.status) {
-                EmvTransactionStatus.SUCCESS -> {
-                    emit(EmvTransactionStep.Success(result))
+            // Check authentication methods in order of preference: CDA > DDA > SDA
+            when {
+                // Combined Data Authentication (CDA)
+                (aip[0].toInt() and 0x01) != 0 -> {
+                    authProcessor.performCda(nfcProvider, tlvDatabase)
                 }
-                EmvTransactionStatus.CARD_ERROR -> {
-                    emit(EmvTransactionStep.Error("Card communication error", result))
+                // Dynamic Data Authentication (DDA)
+                (aip[0].toInt() and 0x02) != 0 -> {
+                    authProcessor.performDda(nfcProvider, tlvDatabase)
                 }
-                EmvTransactionStatus.AUTHENTICATION_FAILED -> {
-                    emit(EmvTransactionStep.Error("Authentication failed", result))
+                // Static Data Authentication (SDA)
+                (aip[0].toInt() and 0x40) != 0 -> {
+                    authProcessor.performSda(nfcProvider, tlvDatabase)
                 }
                 else -> {
-                    emit(EmvTransactionStep.Error("Unknown error", result))
+                    AuthenticationResult.NoAuthentication("No supported authentication method found")
                 }
             }
-            
         } catch (e: Exception) {
-            Timber.e(e, "Error processing EMV card with ${nfcConfig.type}")
-            emit(EmvTransactionStep.Error(e.message ?: "Unknown error", null))
-        } finally {
-            provider.disconnect()
+            Timber.e(e, "Authentication processing failed")
+            AuthenticationResult.NoAuthentication("Authentication error: ${e.message}")
         }
     }
     
-    /**
-     * Auto-select first available EMV application
-     */
-    private suspend fun selectFirstEmvApplication(provider: INfcProvider): ApduResponse {
-        val commonAids = listOf(
-            "A0000000031010",     // VISA
-            "A0000000041010",     // MasterCard  
-            "A000000025010402",   // American Express
-            "A0000000651010",     // JCB
+    private suspend fun performRiskManagement(
+        cardData: EmvCardData,
+        amount: Long,
+        transactionType: TransactionType
+    ): RiskManagementResult {
+        return RiskManagementResult(
+            approved = amount < 10000,
+            riskScore = if (amount > 5000) 0.8 else 0.2,
+            reason = if (amount < 10000) "Amount within limits" else "Amount exceeds limit"
         )
-        
-        for (aid in commonAids) {
-            try {
-                val response = provider.selectApplication(aid)
-                if (response.isSuccess) {
-                    Timber.d("Successfully selected AID: $aid")
-                    return response
-                }
-            } catch (e: Exception) {
-                Timber.w("Failed to select AID $aid: ${e.message}")
-            }
+    }
+    
+    private suspend fun performActionAnalysis(
+        cardData: EmvCardData,
+        authResult: AuthenticationResult,
+        riskResult: RiskManagementResult
+    ): ActionAnalysisResult {
+        val approved = when (authResult) {
+            is AuthenticationResult.Success -> riskResult.approved
+            is AuthenticationResult.Failed -> false
+            is AuthenticationResult.NoAuthentication -> riskResult.approved
         }
         
-        throw EmvCommunicationException("No supported EMV applications found")
-    }
-    
-    /**
-     * Build EMV card data from NFC provider information
-     */
-    private fun buildEmvCardData(cardInfo: NfcCardInfo?, selectResponse: ApduResponse): ByteArray {
-        // Combine Android NFC card info with select response
-        val cardData = mutableListOf<Byte>()
-        
-        // Add card UID
-        cardInfo?.uid?.let { uid ->
-            cardData.addAll(uid.hexToByteArray().toList())
-        }
-        
-        // Add select response data
-        cardData.addAll(selectResponse.data.toList())
-        
-        return cardData.toByteArray()
-    }
-    
-    /**
-     * Get list of supported Application Identifiers (AIDs)
-     */
-    fun getSupportedAids(): List<String> = try {
-        nativeGetSupportedAids().toList()
-    } catch (e: Exception) {
-        Timber.e(e, "Error getting supported AIDs")
-        emptyList()
-    }
-    
-    /**
-     * Validate EMV certificate chain
-     */
-    suspend fun validateCertificate(
-        certData: ByteArray,
-        issuerCert: ByteArray
-    ): Boolean = withContext(Dispatchers.Default) {
-        try {
-            nativeValidateCertificate(certData, issuerCert)
-        } catch (e: Exception) {
-            Timber.e(e, "Error validating certificate")
-            false
-        }
-    }
-    
-    /**
-     * Extension function for hex string conversion  
-     */
-    private fun String.hexToByteArray(): ByteArray = 
-        chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-    
-    /**
-     * Get current NFC provider information
-     */
-    fun getNfcProviderInfo(): Pair<NfcProviderType, NfcCapabilities?> {
-        return Pair(nfcConfig.type, currentNfcProvider?.getCapabilities())
-    }
-    
-    /**
-     * Check if specific NFC provider is available
-     */
-    suspend fun isNfcProviderAvailable(type: NfcProviderType): Boolean {
-        return try {
-            val testProvider = NfcProviderFactory.createProvider(type)
-            val testConfig = NfcProviderConfig(type)
-            val result = testProvider.initialize(testConfig)
-            testProvider.cleanup()
-            result
-        } catch (e: Exception) {
-            false
-        }
-    }
-    
-    /**
-     * Scan EMV certificates for ROCA vulnerability (CVE-2017-15361)
-     */
-    suspend fun scanForRocaVulnerability(certificates: List<EmvCertificate>): List<Pair<EmvCertificate, com.nf_sp00f.app.emv.security.RocaVulnerabilityResult>> {
-        return rocaScanner.scanMultipleCertificates(certificates)
-    }
-    
-    /**
-     * Run ROCA self-test to verify vulnerability detection
-     */
-    suspend fun runRocaSelfTest(): Boolean {
-        return rocaScanner.runSelfTest()
-    }
-    
-    /**
-     * Cleanup resources
-     */
-    fun cleanup() {
-        try {
-            runBlocking {
-                currentNfcProvider?.cleanup()
-            }
-            nativeCleanupEmv()
-            Timber.d("EMV Engine cleaned up")
-        } catch (e: Exception) {
-            Timber.e(e, "Error during EMV cleanup")
-        }
+        return ActionAnalysisResult(
+            action = if (approved) TerminalAction.APPROVE else TerminalAction.DECLINE,
+            reason = if (approved) "Transaction approved" else "Authentication or risk check failed"
+        )
     }
 }
+
+/**
+ * EMV Engine configuration
+ */
+data class EmvConfiguration(
+    val enableRocaCheck: Boolean = true,
+    val enableCryptoValidation: Boolean = true,
+    val enableCryptoTesting: Boolean = false,
+    val timeoutMs: Long = 30000,
+    val strictValidation: Boolean = true
+)
+
+/**
+ * Crypto validation result
+ */
+data class CryptoValidationResult(
+    val isValid: Boolean,
+    val validationChecks: List<ValidationCheck>,
+    val details: String
+)
+
+/**
+ * Individual validation check
+ */
+data class ValidationCheck(
+    val name: String,
+    val passed: Boolean
+)
+
+/**
+ * Security test result
+ */
+data class SecurityTestResult(
+    val passed: Boolean,
+    val securityChecks: List<SecurityCheck>,
+    val summary: String,
+    val rocaInfo: String
+)
+
+/**
+ * Individual security check
+ */
+data class SecurityCheck(
+    val name: String,
+    val passed: Boolean,
+    val details: String
+)

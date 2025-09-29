@@ -158,7 +158,21 @@ object NfcProviderFactory {
             return NfcProviderType.ANDROID_INTERNAL
         }
         
-        // TODO: Add PN532 Bluetooth detection logic
+        // Check for PN532 Bluetooth availability
+        try {
+            val pn532Provider = createProvider(NfcProviderType.PN532_BLUETOOTH)
+            val testConfig = NfcProviderConfig(
+                type = NfcProviderType.PN532_BLUETOOTH,
+                bluetoothAddress = "00:00:00:00:00:00", // Test address
+                autoConnect = false
+            )
+            if (pn532Provider.initialize(testConfig)) {
+                pn532Provider.cleanup()
+                return NfcProviderType.PN532_BLUETOOTH
+            }
+        } catch (e: Exception) {
+            // PN532 not available, continue
+        }
         
         return null
     }

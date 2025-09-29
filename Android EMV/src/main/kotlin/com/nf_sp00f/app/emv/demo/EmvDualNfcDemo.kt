@@ -1,3 +1,14 @@
+/**
+ * nf-sp00f EMV Engine - Dual NFC Demo Application
+ * 
+ * Demonstration application showcasing dual NFC provider support:
+ * - Android Internal NFC (IsoDep/NfcA/NfcB)
+ * - PN532 via Bluetooth UART (HC-06)
+ * 
+ * @package com.nf_sp00f.app.emv.demo
+ * @author nf-sp00f
+ * @since 1.0.0
+ */
 package com.nf_sp00f.app.emv.demo
 
 import android.nfc.Tag
@@ -10,221 +21,360 @@ import kotlinx.coroutines.flow.collect
 import timber.log.Timber
 
 /**
- * EMV Dual NFC Demo
+ * EMV Dual NFC Demonstration Application
  * 
- * Demonstrates usage of the EMV library with both Android Internal NFC
- * and PN532 connected via Bluetooth UART (HC-06).
+ * Showcases seamless switching between Android internal NFC
+ * and external PN532 via Bluetooth connectivity.
  */
-class EmvDualNfcDemo(private val configManager: EmvConfigurationManager) {
+class EmvDualNfcDemo {
     
-    private val emvEngine = EmvEngine.getInstance()
+    companion object {
+        private const val TAG = "EmvDualNfcDemo"
+        
+        // Demo transaction parameters
+        private const val DEMO_AMOUNT = 2500L // $25.00
+        private const val DEMO_CURRENCY = "USD"
+        
+        // Bluetooth configuration for PN532
+        private const val DEFAULT_PN532_NAME = "HC-06"
+        private const val DEFAULT_PN532_ADDRESS = "98:D3:61:FD:2C:87" // Example MAC
+    }
+    
+    private lateinit var configManager: EmvConfigurationManager
+    private var currentEngine: EmvEngine? = null
+    private val demoScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     
     /**
-     * Demo: Process EMV card with Android Internal NFC
+     * Initialize demo application
      */
-    suspend fun processCardWithAndroidNfc(tag: Tag): String = withContext(Dispatchers.Main) {
+    suspend fun initialize(configManager: EmvConfigurationManager): Boolean {
+        return try {
+            this.configManager = configManager
+            
+            // Load current configuration
+            val config = configManager.loadCompleteConfiguration()
+            Timber.i("Demo initialized with NFC provider: ${config.nfcProvider.type}")
+            
+            true
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to initialize EMV demo")
+            false
+        }
+    }
+    
+    /**
+     * Run Android Internal NFC demo
+     */
+    suspend fun runAndroidNfcDemo(tag: Tag): DemoResult = withContext(Dispatchers.Default) {
         try {
-            Timber.i("=== EMV Processing with Android Internal NFC ===")
+            Timber.i("Starting Android NFC demo with tag: ${tag.id.joinToString("") { "%02X".format(it) }}")
             
             // Configure for Android Internal NFC
-            val config = NfcProviderConfig(NfcProviderType.ANDROID_INTERNAL)
+            val nfcConfig = NfcProviderConfig(NfcProviderType.ANDROID_INTERNAL)
+            configManager.saveNfcProviderConfig(nfcConfig)
             
-            // Initialize EMV engine
-            if (!emvEngine.initialize(config)) {
-                return@withContext "❌ Failed to initialize EMV engine for Android NFC"
-            }
+            // Build EMV engine for Android NFC
+            currentEngine = EmvEngine.builder()
+                .nfcProvider(createAndroidNfcProvider(tag))
+                .enableRocaCheck(true)
+                .enableCryptoValidation(true)
+                .timeout(30000)
+                .build()
             
-            val results = mutableListOf<String>()
-            results.add("✅ EMV Engine initialized with Android Internal NFC")
+            // Process EMV transaction
+            val transactionResult = currentEngine!!.processTransaction(
+                amount = DEMO_AMOUNT,
+                currencyCode = DEMO_CURRENCY,
+                transactionType = TransactionType.PURCHASE
+            )
             
-            // Process the card
-            emvEngine.processCard(tag = tag).collect { step ->
-                when (step) {
-                    is com.nf_sp00f.app.emv.EmvTransactionStep.Connecting -> {
-                        results.add("🔗 Connecting to card...")
-                    }
-                    is com.nf_sp00f.app.emv.EmvTransactionStep.SelectingApplication -> {
-                        results.add("🎯 Selecting EMV application...")
-                    }
-                    is com.nf_sp00f.app.emv.EmvTransactionStep.ProcessingTransaction -> {
-                        results.add("⚡ Processing EMV transaction...")
-                    }
-                    is com.nf_sp00f.app.emv.EmvTransactionStep.Success -> {
-                        results.add("✅ EMV Transaction completed successfully!")
-                        results.add("   Card Vendor: ${step.result.cardVendor}")
-                        results.add("   Application: ${step.result.applicationLabel}")
-                        results.add("   PAN: ${step.result.pan}")
-                    }
-                    is com.nf_sp00f.app.emv.EmvTransactionStep.Error -> {
-                        results.add("❌ EMV Error: ${step.message}")
-                    }
-                }
-            }
+            // Run security tests
+            val securityResult = currentEngine!!.runSecurityTests()
             
-            results.joinToString("\n")
+            DemoResult.Success(
+                provider = "Android Internal NFC",
+                transactionResult = transactionResult,
+                securityTestResult = securityResult,
+                duration = System.currentTimeMillis() // Simplified timing
+            )
             
         } catch (e: Exception) {
-            Timber.e(e, "Error in Android NFC demo")
-            "❌ Android NFC Demo Error: ${e.message}"
+            Timber.e(e, "Android NFC demo failed")
+            DemoResult.Failed("Android NFC demo error: ${e.message}")
+        } finally {
+            currentEngine?.cleanup()
         }
     }
     
     /**
-     * Demo: Process EMV card with PN532 via Bluetooth
+     * Run PN532 Bluetooth NFC demo
      */
-    suspend fun processCardWithPn532Bluetooth(bluetoothAddress: String): String = withContext(Dispatchers.Main) {
+    suspend fun runPn532BluetoothDemo(deviceAddress: String = DEFAULT_PN532_ADDRESS): DemoResult = withContext(Dispatchers.Default) {
         try {
-            Timber.i("=== EMV Processing with PN532 Bluetooth ===")
+            Timber.i("Starting PN532 Bluetooth demo with device: $deviceAddress")
             
             // Configure for PN532 Bluetooth
-            val config = NfcProviderConfig(
+            val nfcConfig = NfcProviderConfig(
                 type = NfcProviderType.PN532_BLUETOOTH,
-                bluetoothAddress = bluetoothAddress,
-                baudRate = 115200,
-                timeout = 30000L
+                bluetoothDeviceAddress = deviceAddress,
+                bluetoothDeviceName = DEFAULT_PN532_NAME
+            )
+            configManager.saveNfcProviderConfig(nfcConfig)
+            
+            // Build EMV engine for PN532
+            currentEngine = EmvEngine.builder()
+                .nfcProvider(createPn532BluetoothProvider(deviceAddress))
+                .enableRocaCheck(true)
+                .enableCryptoValidation(true)
+                .timeout(45000) // Longer timeout for Bluetooth
+                .build()
+            
+            // Test PN532 connection first
+            val connectionTest = testPn532Connection()
+            if (!connectionTest) {
+                return@withContext DemoResult.Failed("PN532 Bluetooth connection failed")
+            }
+            
+            // Process EMV transaction
+            val transactionResult = currentEngine!!.processTransaction(
+                amount = DEMO_AMOUNT,
+                currencyCode = DEMO_CURRENCY,
+                transactionType = TransactionType.PURCHASE
             )
             
-            // Initialize EMV engine
-            if (!emvEngine.initialize(config)) {
-                return@withContext "❌ Failed to initialize EMV engine for PN532 Bluetooth"
-            }
+            // Run security tests
+            val securityResult = currentEngine!!.runSecurityTests()
             
-            val results = mutableListOf<String>()
-            results.add("✅ EMV Engine initialized with PN532 Bluetooth")
-            results.add("   Bluetooth Address: $bluetoothAddress")
-            
-            // Process the card (no tag parameter needed for PN532)
-            emvEngine.processCard().collect { step ->
-                when (step) {
-                    is com.nf_sp00f.app.emv.EmvTransactionStep.Connecting -> {
-                        results.add("🔗 Connecting to PN532 via Bluetooth...")
-                    }
-                    is com.nf_sp00f.app.emv.EmvTransactionStep.SelectingApplication -> {
-                        results.add("🎯 Selecting EMV application with PN532...")
-                    }
-                    is com.nf_sp00f.app.emv.EmvTransactionStep.ProcessingTransaction -> {
-                        results.add("⚡ Processing EMV transaction via PN532...")
-                    }
-                    is com.nf_sp00f.app.emv.EmvTransactionStep.Success -> {
-                        results.add("✅ PN532 EMV Transaction completed successfully!")
-                        results.add("   Card Vendor: ${step.result.cardVendor}")
-                        results.add("   Application: ${step.result.applicationLabel}")
-                        results.add("   PAN: ${step.result.pan}")
-                    }
-                    is com.nf_sp00f.app.emv.EmvTransactionStep.Error -> {
-                        results.add("❌ PN532 EMV Error: ${step.message}")
-                    }
-                }
-            }
-            
-            results.joinToString("\n")
-            
-        } catch (e: Exception) {
-            Timber.e(e, "Error in PN532 Bluetooth demo")
-            "❌ PN532 Bluetooth Demo Error: ${e.message}"
-        }
-    }
-    
-    /**
-     * Demo: Auto-detect and configure best NFC provider
-     */
-    suspend fun autoDetectAndConfigure(): String = withContext(Dispatchers.Default) {
-        try {
-            Timber.i("=== Auto-detecting NFC Providers ===")
-            
-            val results = mutableListOf<String>()
-            results.add("🔍 Auto-detecting available NFC providers...")
-            
-            // Check Android Internal NFC
-            val androidNfcAvailable = emvEngine.isNfcProviderAvailable(NfcProviderType.ANDROID_INTERNAL)
-            results.add("   Android Internal NFC: ${if (androidNfcAvailable) "✅ Available" else "❌ Not Available"}")
-            
-            // Check PN532 Bluetooth (need configured address)
-            val (btAddress, btName) = configManager.getSavedBluetoothDevice()
-            val pn532Available = if (btAddress != null) {
-                emvEngine.isNfcProviderAvailable(NfcProviderType.PN532_BLUETOOTH)
-            } else {
-                false
-            }
-            results.add("   PN532 Bluetooth: ${if (pn532Available) "✅ Available ($btName)" else "❌ Not Available"}")
-            
-            // Auto-configure best option
-            when {
-                androidNfcAvailable -> {
-                    configManager.configureAndroidNfc()
-                    results.add("🎯 Configured for Android Internal NFC")
-                }
-                pn532Available -> {
-                    results.add("🎯 Configured for PN532 Bluetooth ($btAddress)")
-                }
-                else -> {
-                    results.add("❌ No NFC providers available")
-                }
-            }
-            
-            results.joinToString("\n")
-            
-        } catch (e: Exception) {
-            Timber.e(e, "Error in auto-detection")
-            "❌ Auto-detection Error: ${e.message}"
-        }
-    }
-    
-    /**
-     * Demo: Configure PN532 Bluetooth device
-     */
-    fun configurePn532Device(bluetoothAddress: String, deviceName: String = "HC-06"): String {
-        try {
-            Timber.i("=== Configuring PN532 Bluetooth Device ===")
-            
-            configManager.configurePn532Bluetooth(
-                bluetoothAddress = bluetoothAddress,
-                deviceName = deviceName,
-                baudRate = 115200,
-                timeout = 30000L
+            DemoResult.Success(
+                provider = "PN532 Bluetooth ($deviceAddress)",
+                transactionResult = transactionResult,
+                securityTestResult = securityResult,
+                duration = System.currentTimeMillis()
             )
             
-            return buildString {
-                appendLine("✅ PN532 Bluetooth Configuration Saved")
-                appendLine("   Device: $deviceName")
-                appendLine("   Address: $bluetoothAddress")
-                appendLine("   Baud Rate: 115200")
-                appendLine("   Timeout: 30 seconds")
-                appendLine("")
-                appendLine("💡 You can now use PN532 for EMV processing!")
-            }
-            
         } catch (e: Exception) {
-            Timber.e(e, "Error configuring PN532")
-            return "❌ PN532 Configuration Error: ${e.message}"
+            Timber.e(e, "PN532 Bluetooth demo failed")
+            DemoResult.Failed("PN532 demo error: ${e.message}")
+        } finally {
+            currentEngine?.cleanup()
         }
     }
     
     /**
-     * Get current configuration status
+     * Run comparative demo between both NFC providers
      */
-    fun getConfigurationStatus(): String {
+    suspend fun runComparativeDemo(tag: Tag, bluetoothAddress: String = DEFAULT_PN532_ADDRESS): ComparativeDemoResult = withContext(Dispatchers.Default) {
+        try {
+            Timber.i("Starting comparative demo: Android NFC vs PN532 Bluetooth")
+            
+            // Run Android NFC demo
+            val androidResult = runAndroidNfcDemo(tag)
+            delay(1000) // Brief pause between tests
+            
+            // Run PN532 Bluetooth demo
+            val pn532Result = runPn532BluetoothDemo(bluetoothAddress)
+            
+            // Compare results
+            val comparison = compareResults(androidResult, pn532Result)
+            
+            ComparativeDemoResult(
+                androidNfcResult = androidResult,
+                pn532BluetoothResult = pn532Result,
+                comparison = comparison,
+                recommendation = generateRecommendation(comparison)
+            )
+            
+        } catch (e: Exception) {
+            Timber.e(e, "Comparative demo failed")
+            ComparativeDemoResult(
+                androidNfcResult = DemoResult.Failed("Comparative demo error"),
+                pn532BluetoothResult = DemoResult.Failed("Comparative demo error"),
+                comparison = ComparisonResult.ERROR,
+                recommendation = "Demo execution failed: ${e.message}"
+            )
+        }
+    }
+    
+    /**
+     * Test PN532 Bluetooth connectivity
+     */
+    private suspend fun testPn532Connection(): Boolean = withContext(Dispatchers.IO) {
         return try {
-            buildString {
-                appendLine("📋 EMV Configuration Status")
-                appendLine("=" * 40)
-                appendLine()
-                append(configManager.getConfigSummary())
-                appendLine()
-                
-                val (providerType, capabilities) = emvEngine.getNfcProviderInfo()
-                appendLine("Current NFC Provider: $providerType")
-                
-                capabilities?.let { caps ->
-                    appendLine("Provider Capabilities:")
-                    appendLine("  - Supported Cards: ${caps.supportedCardTypes.joinToString(", ")}")
-                    appendLine("  - Max APDU Length: ${caps.maxApduLength}")
-                    appendLine("  - Extended Length: ${caps.supportsExtendedLength}")
-                    appendLine("  - Field Control: ${caps.canControlField}")
-                }
-            }
+            // Simulate PN532 connection test
+            delay(2000) // Simulate Bluetooth connection time
+            
+            // In real implementation, this would:
+            // 1. Connect to Bluetooth device
+            // 2. Send PN532 firmware version command
+            // 3. Validate response
+            
+            Timber.d("PN532 connection test completed")
+            true // Simulate successful connection
+            
         } catch (e: Exception) {
-            "❌ Error getting configuration status: ${e.message}"
+            Timber.e(e, "PN532 connection test failed")
+            false
         }
     }
+    
+    /**
+     * Create Android NFC provider for demo
+     */
+    private fun createAndroidNfcProvider(tag: Tag): AndroidInternalNfcProvider {
+        return AndroidInternalNfcProvider().apply {
+            // Configure with demo tag
+            setDemoTag(tag)
+        }
+    }
+    
+    /**
+     * Create PN532 Bluetooth provider for demo
+     */
+    private fun createPn532BluetoothProvider(deviceAddress: String): Pn532BluetoothNfcProvider {
+        return Pn532BluetoothNfcProvider().apply {
+            // Configure with Bluetooth parameters
+            setBluetoothDevice(deviceAddress, DEFAULT_PN532_NAME)
+        }
+    }
+    
+    /**
+     * Compare results between NFC providers
+     */
+    private fun compareResults(androidResult: DemoResult, pn532Result: DemoResult): ComparisonResult {
+        return when {
+            androidResult is DemoResult.Success && pn532Result is DemoResult.Success -> {
+                // Compare performance and capabilities
+                val androidDuration = androidResult.duration
+                val pn532Duration = pn532Result.duration
+                
+                when {
+                    androidDuration < pn532Duration -> ComparisonResult.ANDROID_NFC_FASTER
+                    pn532Duration < androidDuration -> ComparisonResult.PN532_FASTER
+                    else -> ComparisonResult.EQUIVALENT_PERFORMANCE
+                }
+            }
+            androidResult is DemoResult.Success && pn532Result is DemoResult.Failed -> {
+                ComparisonResult.ANDROID_NFC_ONLY
+            }
+            androidResult is DemoResult.Failed && pn532Result is DemoResult.Success -> {
+                ComparisonResult.PN532_ONLY
+            }
+            else -> ComparisonResult.BOTH_FAILED
+        }
+    }
+    
+    /**
+     * Generate recommendation based on comparison
+     */
+    private fun generateRecommendation(comparison: ComparisonResult): String {
+        return when (comparison) {
+            ComparisonResult.ANDROID_NFC_FASTER -> 
+                "Recommendation: Use Android Internal NFC for better performance and reliability."
+            ComparisonResult.PN532_FASTER -> 
+                "Recommendation: PN532 Bluetooth shows superior performance for this scenario."
+            ComparisonResult.EQUIVALENT_PERFORMANCE -> 
+                "Recommendation: Both providers perform similarly. Choose based on hardware availability."
+            ComparisonResult.ANDROID_NFC_ONLY -> 
+                "Recommendation: Use Android Internal NFC. PN532 Bluetooth connectivity issues detected."
+            ComparisonResult.PN532_ONLY -> 
+                "Recommendation: Use PN532 Bluetooth. Android Internal NFC not available or compatible."
+            ComparisonResult.BOTH_FAILED -> 
+                "Recommendation: Check card compatibility and NFC hardware functionality."
+            ComparisonResult.ERROR -> 
+                "Recommendation: Review demo configuration and retry."
+        }
+    }
+    
+    /**
+     * Get demo status and configuration
+     */
+    fun getDemoStatus(): DemoStatus {
+        return DemoStatus(
+            isInitialized = ::configManager.isInitialized,
+            currentProvider = getCurrentProviderType(),
+            engineActive = currentEngine != null,
+            lastDemoTime = System.currentTimeMillis()
+        )
+    }
+    
+    /**
+     * Get current NFC provider type
+     */
+    private suspend fun getCurrentProviderType(): NfcProviderType? {
+        return try {
+            val config = configManager.loadNfcProviderConfig()
+            config.type
+        } catch (e: Exception) {
+            null
+        }
+    }
+    
+    /**
+     * Cleanup demo resources
+     */
+    fun cleanup() {
+        currentEngine?.cleanup()
+        currentEngine = null
+        demoScope.cancel()
+        Timber.d("EMV demo cleanup completed")
+    }
+}
+
+/**
+ * Demo result sealed class
+ */
+sealed class DemoResult {
+    data class Success(
+        val provider: String,
+        val transactionResult: EmvTransactionResult,
+        val securityTestResult: SecurityTestResult,
+        val duration: Long
+    ) : DemoResult()
+    
+    data class Failed(
+        val reason: String
+    ) : DemoResult()
+}
+
+/**
+ * Comparative demo result
+ */
+data class ComparativeDemoResult(
+    val androidNfcResult: DemoResult,
+    val pn532BluetoothResult: DemoResult,
+    val comparison: ComparisonResult,
+    val recommendation: String
+)
+
+/**
+ * Comparison result enumeration
+ */
+enum class ComparisonResult {
+    ANDROID_NFC_FASTER,
+    PN532_FASTER,
+    EQUIVALENT_PERFORMANCE,
+    ANDROID_NFC_ONLY,
+    PN532_ONLY,
+    BOTH_FAILED,
+    ERROR
+}
+
+/**
+ * Demo status data class
+ */
+data class DemoStatus(
+    val isInitialized: Boolean,
+    val currentProvider: NfcProviderType?,
+    val engineActive: Boolean,
+    val lastDemoTime: Long
+)
+
+/**
+ * Transaction type enumeration
+ */
+enum class TransactionType(val code: Int) {
+    PURCHASE(0x00),
+    CASH_ADVANCE(0x01),
+    REFUND(0x20),
+    BALANCE_INQUIRY(0x30)
 }
